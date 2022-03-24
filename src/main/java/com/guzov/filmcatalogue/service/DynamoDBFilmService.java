@@ -1,93 +1,59 @@
 package com.guzov.filmcatalogue.service;
 
-import com.amazonaws.services.dynamodbv2.AmazonDynamoDBClientBuilder;
-import com.amazonaws.services.dynamodbv2.document.DynamoDB;
-import com.amazonaws.services.dynamodbv2.document.Item;
-import com.amazonaws.services.dynamodbv2.document.ItemCollection;
-import com.amazonaws.services.dynamodbv2.document.QueryOutcome;
-import com.amazonaws.services.dynamodbv2.document.Table;
-import com.amazonaws.services.dynamodbv2.document.spec.QuerySpec;
-import com.amazonaws.services.dynamodbv2.document.utils.ValueMap;
-import com.amazonaws.services.dynamodbv2.model.AmazonDynamoDBException;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.guzov.filmcatalogue.dto.FilmRequest;
 import com.guzov.filmcatalogue.model.FilmInfo;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodb.model.DynamoDbException;
+import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
+import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
 
 import java.util.ArrayList;
-import java.util.Iterator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 public class DynamoDBFilmService {
-    private String tableName;
-    private DynamoDB dynamoDB;
-    private static final String AND_DELIMITER = " and ";
+    private final String tableName;
+    private final DynamoDbClient dynamoDB;
 
     public DynamoDBFilmService(String tableName) {
         this.tableName = tableName;
-        this.dynamoDB = new DynamoDB(AmazonDynamoDBClientBuilder.standard().build());
+        dynamoDB = DynamoDbClient
+                .builder()
+                .region(Region.US_EAST_2)
+                .build();
     }
 
-    public List<FilmInfo> getByRequest(FilmRequest request) {
-        validateRequest(request);
-        List<FilmInfo> infos = new ArrayList<>();
-        Table table = dynamoDB.getTable(tableName);
-        QuerySpec querySpec = getQuerySpec(request);
+    public List<FilmInfo> getByType(String type) {
+        Map<String, AttributeValue> attrValues = new HashMap<>();
+        attrValues.put(":v_tpe", AttributeValue.builder().s(type).build());
+        QueryRequest queryReq = QueryRequest.builder()
+                .tableName(tableName)
+                .keyConditionExpression("filmType = :v_tpe")
+                .expressionAttributeValues(attrValues)
+                .build();
         try {
-            ItemCollection<QueryOutcome> itemCollection = table.query(querySpec);
-            Iterator<Item> itemIterator = itemCollection.iterator();
-            ObjectMapper mapper = new ObjectMapper();
-            while (itemIterator.hasNext()) {
-                FilmInfo retrievedRecord = mapper.readValue(itemIterator.next().toJSON(), FilmInfo.class);
-                infos.add(retrievedRecord);
-            }
-        } catch (AmazonDynamoDBException | JsonProcessingException e) {
-            throw new RuntimeException("Error while querying records from DynamoDB", e);
-        }
-        return infos;
-    }
-
-    private void validateRequest(FilmRequest request) {
-        if (request == null || request.getType() == null) {
-            throw new IllegalArgumentException("Request must not be null and film type should be specified");
+            QueryResponse response = dynamoDB.query(queryReq);
+            return getRecords(response.items());
+        } catch (DynamoDbException e) {
+            throw new DynamoDBFilmServiceException("Error while querying data", e);
         }
     }
 
-    private QuerySpec getQuerySpec(FilmRequest request) {
-        QuerySpec querySpec = new QuerySpec();
-        ValueMap valueMap = new ValueMap();
-        if (request.getType() != null) {
-            querySpec.withKeyConditionExpression("filmType = :v_tpe");
-            valueMap.put(":v_tpe", request.getType());
+    private List<FilmInfo> getRecords(List<Map<String, AttributeValue>> items) {
+        List<FilmInfo> filmInfoList = new ArrayList<>();
+        for (Map<String, AttributeValue> item : items) {
+            FilmInfo filmInfo = new FilmInfo();
+            filmInfo.setFilmType(item.get("filmType").s());
+            filmInfo.setCountry(item.get("country").s());
+            filmInfo.setDateCreated(item.get("dateCreated").s());
+            filmInfo.setDirector(item.get("director").s());
+            filmInfo.setName(item.get("name").s());
+            filmInfo.setGenre(item.get("genre").s());
+            filmInfo.setId(Long.parseLong(item.get("id").n()));
+            filmInfoList.add(filmInfo);
         }
-        if (request.getCountry() != null) {
-            addFilter(querySpec, "country = :v_cntry");
-            valueMap.put(":v_cntry", request.getCountry());
-        }
-        if (request.getDirector() != null) {
-            addFilter(querySpec, "director = :v_drctr");
-            valueMap.put(":v_drctr", request.getDirector());
-        }
-        if (request.getGenre() != null) {
-            addFilter(querySpec, "genre = :v_gnre");
-            valueMap.put(":v_gnre", request.getGenre());
-        }
-        if (request.getYearStart() != null && request.getYearEnd() != null) {
-            addFilter(querySpec, "dateCreated between :v_yrstart and :v_yrend");
-            valueMap.put(":v_yrstart", request.getYearStart());
-            valueMap.put("v_yrend", request.getYearEnd());
-        }
-        querySpec.withValueMap(valueMap);
-        return querySpec;
-    }
-
-    private static void addFilter(QuerySpec querySpec, String filter) {
-        String filterExpression = querySpec.getFilterExpression();
-        if (filterExpression != null && !filterExpression.isBlank()) {
-            filterExpression = String.join(AND_DELIMITER, filterExpression, filter);
-        } else {
-            filterExpression = filter;
-        }
-        querySpec.withFilterExpression(filterExpression);
+        return filmInfoList;
     }
 }
